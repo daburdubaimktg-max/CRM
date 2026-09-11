@@ -9,9 +9,16 @@ reads once.
 ```sh
 cp .env.example .env        # fill DATABASE_URL, BETTER_AUTH_SECRET, ALLOWED_SIGN_IN
 docker compose up -d        # Postgres, matching .env.example
+bun install
 bun run db:migrate && bun run db:seed
 bun run dev                 # app :3000, api :3001, agent :2000
 ```
+
+**`.env` and Postgres both come before `bun install`.** The `@crm/db` postinstall
+loads `prisma.config.ts`, which resolves `DATABASE_URL`. Without the file the whole
+install aborts on `PrismaConfigEnvError: Cannot resolve environment variable:
+DATABASE_URL`, which names the variable but not the reason, and reads like a broken
+lockfile rather than a missing file.
 
 Prisma from the repo root: `db:generate`, `db:migrate`, `db:push`, `db:reset`,
 `db:seed`, `db:studio`, `db:deploy`.
@@ -147,6 +154,31 @@ never reuse one from an example, a tutorial, or another environment.
 ```sh
 bun run --filter=api test
 bun run --filter=agent test    # integration specs need DATABASE_URL + real Postgres
+```
+
+A `pre-push` hook runs `bun run test`, so the whole suite gates every push.
+
+**`bun run db:test` reads `TEST_DATABASE_URL` from the real environment, not from
+`.env`.** `scripts/test-db.ts` never loads the root file, and Bun auto-loads only the
+working directory's, which for `packages/db` is nothing. So it reports `Neither
+TEST_DATABASE_URL nor DATABASE_URL is set` while the value sits in `.env`. Export it,
+and keep using the package script — running the script directly gets past the message
+and then cannot find `prisma` on `PATH`. `require-local-db.ts` already reads the root
+files directly for this reason; `test-db.ts` does not.
+
+**`apps/api/test/auth.e2e.spec.ts` needs a non-empty `GOOGLE_CLIENT_ID`.** It asserts
+`google: true`, and its `fallback()` supplies a dummy credential only when nothing is
+set at all — so the empty string `.env.example` ships loses to it. The file passes
+alone and fails in the full suite, because by then another spec has built the auth
+config. `ci.yml` sets `ci-only-google-client-id` for exactly this. Do the same locally
+rather than putting a fake credential in `.env`, which would put a dead Google button
+on the sign-in page:
+
+```sh
+export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/crm_test?schema=public"
+export GOOGLE_CLIENT_ID=ci-only-google-client-id
+export GOOGLE_CLIENT_SECRET=ci-only-google-client-secret
+bun run test
 ```
 
 ### The test database rebuilds itself when it drifts
